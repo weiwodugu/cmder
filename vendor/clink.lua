@@ -14,9 +14,9 @@ dofile(clink_lua_file)
 -- now add our own things...
 
 ---
- -- Setting the prompt in clink means that commands which rewrite the prompt do
- -- not destroy our own prompt. It also means that started cmds (or batch files
- -- which echo) don't get the ugly '{lamb}' shown.
+-- Setting the prompt in clink means that commands which rewrite the prompt do
+-- not destroy our own prompt. It also means that started cmds (or batch files
+-- which echo) don't get the ugly '{lamb}' shown.
 ---
 local function set_prompt_filter()
     -- get_cwd() is differently encoded than the clink.prompt.value, so everything other than
@@ -40,23 +40,27 @@ local function set_prompt_filter()
     -- orig: $E[1;32;40m$P$S{git}{hg}$S$_$E[1;30;40m{lamb}$S$E[0m
     -- color codes: "\x1b[1;37;40m"
     local cmder_prompt = "\x1b[1;32;40m{cwd} {git}{hg}{svn} \n\x1b[1;39;40m{lamb} \x1b[0m"
-    local lambda
+    local lambda = "λ"
+    cwd = string.gsub(cwd, "%%", "{percent}")
     cmder_prompt = string.gsub(cmder_prompt, "{cwd}", cwd)
-    if env == nil then
-        lambda = "λ"
-    else
-        lambda = "("..env..") λ"
+
+    if env ~= nil then
+        lambda = "("..env..") "..lambda
     end
     clink.prompt.value = string.gsub(cmder_prompt, "{lamb}", lambda)
 end
 
+local function percent_prompt_filter()
+    clink.prompt.value = string.gsub(clink.prompt.value, "{percent}", "%%")
+end
+
 ---
- -- Resolves closest directory location for specified directory.
- -- Navigates subsequently up one level and tries to find specified directory
- -- @param  {string} path    Path to directory will be checked. If not provided
- --                          current directory will be used
- -- @param  {string} dirname Directory name to search for
- -- @return {string} Path to specified directory or nil if such dir not found
+-- Resolves closest directory location for specified directory.
+-- Navigates subsequently up one level and tries to find specified directory
+-- @param  {string} path    Path to directory will be checked. If not provided
+--                          current directory will be used
+-- @param  {string} dirname Directory name to search for
+-- @return {string} Path to specified directory or nil if such dir not found
 local function get_dir_contains(path, dirname)
 
     -- return parent path for specified entry (either file or directory)
@@ -152,8 +156,8 @@ local function get_svn_dir(path)
 end
 
 ---
- -- Find out current branch
- -- @return {nil|git branch name}
+-- Find out current branch
+-- @return {nil|git branch name}
 ---
 local function get_git_branch(git_dir)
     git_dir = git_dir or get_git_dir()
@@ -174,8 +178,8 @@ local function get_git_branch(git_dir)
 end
 
 ---
- -- Find out current branch
- -- @return {false|mercurial branch name}
+-- Find out current branch
+-- @return {false|mercurial branch name}
 ---
 local function get_hg_branch()
     for line in io.popen("hg branch 2>nul"):lines() do
@@ -189,8 +193,8 @@ local function get_hg_branch()
 end
 
 ---
- -- Find out current branch
- -- @return {false|svn branch name}
+-- Find out current branch
+-- @return {false|svn branch name}
 ---
 local function get_svn_branch(svn_dir)
     for line in io.popen("svn info 2>nul"):lines() do
@@ -204,38 +208,61 @@ local function get_svn_branch(svn_dir)
 end
 
 ---
- -- Get the status of working dir
- -- @return {bool}
+-- Get the status of working dir
+-- @return {bool}
 ---
 local function get_git_status()
     local file = io.popen("git --no-optional-locks status --porcelain 2>nul")
     for line in file:lines() do
+        file:close()
         return false
     end
+    file:close()
 
     return true
 end
 
 ---
- -- Get the status of working dir
- -- @return {bool}
+-- Gets the conflict status
+-- @return {bool} indicating true for conflict, false for no conflicts
+---
+function get_git_conflict()
+    local file = io.popen("git diff --name-only --diff-filter=U 2>nul")
+    for line in file:lines() do
+        file:close()
+        return true;
+    end
+    file:close()
+    return false
+end
+
+
+---
+-- Get the status of working dir
+-- @return {bool}
 ---
 local function get_hg_status()
-    for line in io.popen("hg status -0"):lines() do
-       return false
+    local file = io.popen("hg status -0")
+    for line in file:lines() do
+        file:close()
+        return false
     end
+    file:close()
 
     return true
 end
 
 ---
- -- Get the status of working dir
- -- @return {bool}
+-- Get the status of working dir
+-- @return {bool}
 ---
 local function get_svn_status()
-    for line in io.popen("svn status -q"):lines() do
-       return false
+    local file = io.popen("svn status -q")
+    for line in file:lines() do
+        file:close()
+        return false
     end
+    file:close()
 
     return true
 end
@@ -245,7 +272,8 @@ local function git_prompt_filter()
     -- Colors for git status
     local colors = {
         clean = "\x1b[1;37;40m",
-        dirty = "\x1b[31;1m",
+        dirty = "\x1b[33;3m",
+        conflict = "\x1b[31;1m"
     }
 
     local git_dir = get_git_dir()
@@ -255,11 +283,17 @@ local function git_prompt_filter()
         local color
         if branch then
             -- Has branch => therefore it is a git folder, now figure out status
-            if get_git_status() then
+            local gitStatus = get_git_status()
+            local gitConflict = get_git_conflict()
+
+            color = colors.dirty
+            if gitStatus then
                 color = colors.clean
-            else
-                color = colors.dirty
             end
+
+            if gitConflict then
+                color = colors.conflict
+            end 
 
             clink.prompt.value = string.gsub(clink.prompt.value, "{git}", color.."("..branch..")")
             return false
@@ -273,31 +307,40 @@ end
 
 local function hg_prompt_filter()
 
-    -- Colors for mercurial status
-    local colors = {
-        clean = "\x1b[1;37;40m",
-        dirty = "\x1b[31;1m",
-    }
+    local result = ""
 
-    if get_hg_dir() then
-        -- if we're inside of mercurial repo then try to detect current branch
-        local branch = get_hg_branch()
-        local color
-        if branch then
-            -- Has branch => therefore it is a mercurial folder, now figure out status
-            if get_hg_status() then
-                color = colors.clean
-            else
-                color = colors.dirty
+    local hg_dir = get_hg_dir()
+    if hg_dir then
+        -- Colors for mercurial status
+        local colors = {
+            clean = "\x1b[1;37;40m",
+            dirty = "\x1b[31;1m",
+        }
+
+        -- 'hg id' gives us BOTH the branch name AND an indicator that there
+        -- are uncommitted changes, in one fast(er) call
+        local pipe = io.popen("hg id 2>&1")
+        local output = pipe:read('*all')
+        local rc = { pipe:close() }
+
+        if output ~= nil and
+           string.sub(output,1,7) ~= "abort: " and             -- not an HG working copy
+           string.sub(output,1,12) ~= "000000000000" and       -- empty wc (needs update)
+           (not string.find(output, "is not recognized")) then -- 'hg' not in path
+            local color = colors.clean
+            -- split elements on space delimiter
+            local items = {}
+            for i in string.gmatch(output, "%S+") do
+                table.insert(items, i)
             end
-
-            clink.prompt.value = string.gsub(clink.prompt.value, "{hg}", color.."("..branch..")")
-            return false
+            -- if the repo hash ends with '+', the wc has uncommitted changes
+            if string.sub(items[1], -1, -1) == "+" then color = colors.dirty end
+            -- substitute the branch in directly -- already WITH parentheses.  :)
+            result = color .. items[2] -- string.sub(items[2], 1, string.len(items[2]) - 1)
         end
     end
 
-    -- No mercurial present or not in mercurial file
-    clink.prompt.value = string.gsub(clink.prompt.value, "{hg}", "")
+    clink.prompt.value = string.gsub(clink.prompt.value, "{hg}", result)
     return false
 end
 
@@ -334,6 +377,7 @@ clink.prompt.register_filter(set_prompt_filter, 1)
 clink.prompt.register_filter(hg_prompt_filter, 50)
 clink.prompt.register_filter(git_prompt_filter, 50)
 clink.prompt.register_filter(svn_prompt_filter, 50)
+clink.prompt.register_filter(percent_prompt_filter, 51)
 
 local completions_dir = clink.get_env('CMDER_ROOT')..'/vendor/clink-completions/'
 for _,lua_module in ipairs(clink.find_files(completions_dir..'*.lua')) do
@@ -344,4 +388,14 @@ for _,lua_module in ipairs(clink.find_files(completions_dir..'*.lua')) do
         -- so config reloading using Alt-Q won't reload updated modules.
         dofile(filename)
     end
+end
+
+if clink.get_env('CMDER_USER_CONFIG') then
+  local cmder_config_dir = clink.get_env('CMDER_ROOT')..'/config/'
+  for _,lua_module in ipairs(clink.find_files(cmder_config_dir..'*.lua')) do
+    local filename = cmder_config_dir..lua_module
+    -- use dofile instead of require because require caches loaded modules
+    -- so config reloading using Alt-Q won't reload updated modules.
+    dofile(filename)
+  end
 end
